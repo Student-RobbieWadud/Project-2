@@ -134,3 +134,142 @@ int main(int argc, char** argv)
                 perror("fopen: File not found");
                 exit(1);
         }
+
+        char line[256];
+
+        while(fgets(line, sizeof(line), fp) != NULL)
+        {
+                line[strlen(line) - 1] = '\0';
+                strcpy(shm->data[i], line);
+                i++;
+        }
+
+        int count = 0;
+
+        if(i < maxTotalProcessesInSystem)
+        {
+                maxTotalProcessesInSystem = i;
+        }
+
+        if(maxTotalProcessesInSystem < maxConcurrentProcessesInSystem)
+        {
+                maxConcurrentProcessesInSystem = maxTotalProcessesInSystem;
+        }
+
+        shm->count = maxTotalProcessesInSystem;
+
+        while(count < maxConcurrentProcessesInSystem)
+        {
+                trySpawnChild(count++);
+        }
+
+        while(currentConcurrentProcessesInSystem > 0)
+        {
+                wait(NULL);
+                --currentConcurrentProcessesInSystem;
+                trySpawnChild(count++);
+        }
+
+        releaseMemory();
+
+        return 0;
+}
+
+void trySpawnChild(int count)
+{
+        if((currentConcurrentProcessesInSystem < maxConcurrentProcessesInSystem) && (count < maxTotalProcessesInSystem))
+        {
+                spawn(count);
+        }
+}
+
+void spawn(int count)
+{
+        ++currentConcurrentProcessesInSystem;
+        if(fork() == 0)
+        {
+                if(count == 1)
+                {
+                        shm->slaveProcessGroup = getpid();
+                }
+
+                setpgid(0, shm->slaveProcessGroup);
+
+                char buf[256];
+
+                sprintf(buf, "%d", count + 1);
+
+                execl("./palin", "palin", buf, (char*) NULL);
+
+                exit(0);
+        }
+}
+
+void sigHandler(int signal)
+{
+        killpg(shm->slaveProcessGroup, SIGTERM);
+        int status;
+
+        while(wait(&status) > 0)
+        {
+                if(WIFEXITED(status))
+                {
+                        printf("Ok: Child exited with exit status: %d\n", WEXITSTATUS(status));
+                }
+
+                else
+                {
+                        printf("ERROR: Child has not terminated correctly\n");
+                }
+        }
+
+        releaseMemory();
+
+        cout << "Exiting master process" << endl;
+
+        exit(0);
+}
+
+void releaseMemory()
+{
+        shmdt(shm);
+        shmctl(shmSegmentID, IPC_RMID, NULL);
+}
+
+void parentInterrupt(int seconds)
+{
+        timer(seconds);
+
+        struct sigaction sa;
+
+        sigemptyset(&sa.sa_mask);
+
+        sa.sa_handler = &sigHandler;
+
+        sa.sa_flags = SA_RESTART;
+
+        if(sigaction(SIGALRM, &sa, NULL) == -1)
+        {
+                perror("ERROR");
+        }
+}
+
+void timer(int seconds)
+{
+        struct itimerval value;
+
+        value.it_value.tv_sec = seconds;
+
+        value.it_value.tv_usec = 0;
+
+        value.it_value.tv_usec = 0;
+
+        value.it_interval.tv_sec = 0;
+
+        value.it_interval.tv_usec = 0;
+
+        if(setitimer(ITIMER_REAL, &value, NULL) == -1)
+        {
+                perror("ERROR");
+        }
+}
