@@ -1,7 +1,7 @@
-all: $(patsubst %.cpp, %, $(wildcard *.cpp))
+all: palindrome master
 
 %.out: %.cpp Makefile
         g++ $< -o $@ -std=c++0x
 
 clean:
-        find . -type f ! -iname "*.cpp" ! -iname "Makefile" ! -iname "infile.txt" -delete
+        rm $(EXEC) $(OBJS) palindrome master
