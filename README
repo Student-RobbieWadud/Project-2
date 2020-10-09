@@ -5,3 +5,14 @@ My Git repository is https://github.com/Student-RobbieWadud/Project-2.git
 There are four files in this project: infile, makefile, palindrome, master
 
 infile: a text file that has example strings of palindromes and non-palindromes (both numbers and strings)
+
+makefile: the makefile needed to run this program
+
+palindrome: the first cpp file
+
+master: the second and main cpp file
+
+Steps to use this program:
+	type in "make"
+	type in "./master -n x -s x infile.txt"
+	type in "make clean" (after the program runs)
