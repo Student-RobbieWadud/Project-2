@@ -2,4 +2,6 @@ This is my README file.
 
 My Git repository is https://github.com/Student-RobbieWadud/Project-2.git
 
-There are four files in this project: 
+There are four files in this project: infile, makefile, palindrome, master
+
+infile: a text file that has example strings of palindromes and non-palindromes (both numbers and strings)
