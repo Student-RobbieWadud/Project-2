@@ -1,37 +1,42 @@
+//Import Statements
 #include <iostream>
-#include <unistd.h>
-#include <ctime>
-#include <sys/ipc.h>
-#include <sys/shm.h>
-#include <signal.h>
-#include <sys/stat.h>
 #include <fstream>
 #include <cstdlib>
+#include <ctime>
+#include <unistd.h>
 #include <string.h>
+#include <signal.h>
 #include <stdbool.h>
+#include <sys/ipc.h>
+#include <sys/shm.h>
+#include <sys/stat.h>
 
 using namespace std;
 
-struct shared_memory
+//Creating the shared memory as a struct
+struct mySharedMemory
 {
-        int count;
-        int turn;
-        int flags[20];
+        int turn, count, flags[20];
         char data[20][256];
-        int slaveProcessGroup;
 };
 
-enum state { idle, want_in, in_cs };
+//From the notes
+enum state {idle, want_in, in_cs};
 
-void sigHandler(int);
+//Function to get the time
+char* getTime();
 
-int id;
+//Function used in case the user presses Ctrl + C
+void handlerForControlC(int);
+
+//The universal process ID
+int processID;
 
 int main(int argc, char ** argv)
 {
         setvbuf(stdout, NULL, _IONBF, 0);
 
-        signal(STGTERM, sigHandler);
+        signal(SIGTERM, handlerForControlC);
 
         int index;
 
@@ -43,147 +48,149 @@ int main(int argc, char ** argv)
 
         else
         {
-                id = atoi(argv[1]);
-                index = id - 1;
+                processID = atoi(argv[1]);
+                index = processID - 1;
         }
 
-        srand(time(0) + id);
+        srand(time(0) + processID);
 
-        int N;
+        //Creating variables for the shared memory key, shared memory segment ID, and slave processes
+        int sharedMemoryKey = ftok("makefil", 'p'), sharedMemorySegmentID, numberOfSlaveProcesses;
 
-        int shmKey = ftok("makefile", 'p');
+        //The shared memory pointer
+        mySharedMemory* sharedMemory;
 
-        int shmSegmentID;
-
-        shared_memory* shm;
-
-        if((shmSegmentID = shmget(shmKey, sizeof(struct shared_memory), IPC_CREAT | S_IRUSR | S_IWUSR)) < 0)
+        //If statements to allocate shared memory
+        if((sharedMemorySegmentID = shmget(sharedMemoryKey, sizeof(struct mySharedMemory), IPC_CREAT | S_IRUSR | S_IWUSR)) < 0)
         {
-                perror("shmget: Failed to allocate shared memory");
+                perror("Could not allocate shared memory!");
                 exit(1);
         }
 
         else
         {
-                shm = (struct shared_memory*) shmat(shmSegmentID, NULL, 0);
+                sharedMemory = (struct mySharedMemory*) shmat(sharedMemorySegmentID, NULL, 0);
         }
 
-        N = shm->count;
+        numberOfSlaveProcesses = sharedMemory->count;
 
-        printf("%s: Process %d Entering critical section\n", getFormattedTime(), id);
+        printf("Process %s is now going in the critical section. Time: %d ", processID, getTime());
 
-        cerr << getFormattedTime() << ": Process " << id << " wants to enter critical section\n";
+        //These variables are for palindrome calculations
+        int left = 0, right = strlen(sharedMemory->data[index]) - 1;
 
-        int l = 0;
+        //Flag used when I have a string that is a palindrome
+        bool flag = true;
 
-        int r = strlen(shm->data[index]) - 1;
-
-        bool palin = true;
-
-        while(r > l)
+        //While loop to see if I have a palindrome
+        while(right > left)
         {
-                if(tolower(shm->data[index][l]) != tolower(shm->data[index][r]))
+                if(tolower(sharedMemory->data[index][left]) != tolower(sharedMemory->data[index][right]))
                 {
-                        palin = false;
+                        flag = false;
                         break;
                 }
 
-                l++;
-                r--;
+                left++;
+                right--;
         }
 
+        //A counter var for the notes algorithm
         int j;
 
+        //Do-while loop for to solve the Critcal Section Problem
         do
         {
-                shm->flags[id - 1] = want_in;
-                j = shm->turn;
+                sharedMemory->flags[processID - 1] = want_in;
+                j = sharedMemory->turn;
 
-                while(j != id - 1)
+                while(j != processID - 1)
                 {
-                        j = (shm->flags[j] != idle ? shm->turn : (j + 1) % N;
+                        j = (sharedMemory->flags[j] != idle) ? sharedMemory->turn : (j + 1) % numberOfSlaveProcesses;
                 }
 
-                shm->flags[id - 1] = in_cs;
+                sharedMemory->flags[processID - 1] = in_cs;
 
-                for(j = 0; j < N; j++)
+                for(j = 0; j < numberOfSlaveProcesses; j++)
                 {
-                        if((j != id - 1) && (shm->flags[j] == in_cs))
+                        if((j != processID - 1) && (sharedMemory->flags[j] == in_cs))
                         {
                                 break;
                         }
                 }
 
-        } while((j < N) || ((shm->turn != id - 1) && (shm->flags[shm->turn] != idle)));
+        } while((j < numberOfSlaveProcesses) || ((sharedMemory->turn != processID - 1) && (sharedMemory->flags[sharedMemory->turn] != idle)));
 
-        shm->turn = id - 1;
+        sharedMemory->turn = processID - 1;
 
-        printf("%s: Process %d in critical section\n", getFormattedTime(), id);
+        printf("Process %s is now going in the critical section. Time: %d", processID, getTime());
 
+        //Do the 0-2 second wait stated in the project
         sleep(rand() % 3);
 
-        FILE *file = fopen(palin ? "palin.out" : "nopalin.out", "a+");
+        //Write palindromes to one file and non-palindromes to another file
+        FILE *file = fopen(flag ? "palin.out" : "nopalin.out", "a+");
 
         if(file == NULL)
         {
-                perror("");
+                perror("There's no file!");
                 exit(1);
         }
 
-        fprintf(file, "%s\n", shm->data[id - 1]);
+        fprintf(file, "%s", sharedMemory->data[processID - 1]);
+
         fclose(file);
 
         file = fopen("output.log", "a+");
 
         if(file == NULL)
         {
-                perror("");
+                perror("There's no file!");
                 exit(1);
         }
 
-        fprintf(file, "%s %d %d %s\n", getFormattedTime(), getpid(), id - 1, shm->data[id - 1]);
+        fprintf(file, "%s %d %d %s\n", getTime(), getpid(), processID - 1, sharedMemory->data[processID - 1]);
         fclose(file);
 
-        printf("%s: Process %d exiting critical section\n", getFormattedTime(), id);
+        printf("Process %s is now going in the critical section. Time: %d", processID, getTime());
 
-        j = (shm->turn + 1) % N;
+        j = (sharedMemory->turn + 1) % numberOfSlaveProcesses;
 
-        while(shm->flags[j] == idle)
+        while(sharedMemory->flags[j] == idle)
         {
-                j = (j + 1) % N;
+                j = (j + 1) % numberOfSlaveProcesses;
         }
 
-        shm->turn = j;
+        sharedMemory->turn = j;
 
-        shm->flags[id - 1] = idle;
+        sharedMemory->flags[processID - 1] = idle;
 
         return 0;
 }
 
-void sigHandler(int signal)
+//Function to get the time of a process ID
+char* getTime()
 {
-        if(signal == STGTERM)
-        {
-                printf("In Signal Handler Function\n");
-                exit(1);
-        }
-}
+        int timeLength = 9;
 
-char* getFormattedTime()
-{
-        int timeStringLength;
-        string timeFormat;
+        char *timeString = new char[timeLength];
 
-        timeStringLength = 9;
-        timeFormat = "%H:%M:%S";
+        string timeFormat = "%H:%M:%S";
 
         time_t seconds = time(0);
 
-        struct tm * ltime = localtime(&seconds);
+        struct tm * localTime = localtime(&seconds);
 
-        char *timeString = new char[timeStringLength];
-
-        strftime(timeString, timeStringLength, timeFormat.c_str(), ltime);
+        strftime(timeString, timeLength, timeFormat.c_str(), localTime);
 
         return timeString;
+}
+
+//Function that exits when the user does Ctrl + C
+void handlerForControlC(int userSignal)
+{
+        if(userSignal == SIGTERM)
+        {
+                exit(1);
+        }
 }

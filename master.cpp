@@ -1,57 +1,67 @@
-#include <sys/time.h>
-#include <unistd.h>
-#include <fstream>
+//Import Statements
 #include <iostream>
-#include <sys/ipc.h>
-#include <sys/shm.h>
-#include <signal.h>
-#include <sys/stat.h>
-#include <sys/wait.h>
+#include <fstream>
 #include <cstdlib>
 #include <string>
 #include <cstring>
+#include <unistd.h>
+#include <signal.h>
+#include <sys/time.h>
+#include <sys/ipc.h>
+#include <sys/shm.h>
+#include <sys/stat.h>
+#include <sys/wait.h>
 
 using namespace std;
 
-struct shared_memory
+//Global Variables
+
+//The max number of processes as the problem states
+const int MAX_PROCESSES = 20;
+
+//Variables with defaults on the project paper
+int maxConcurrentProcesses = 2, maxTotalProcesses = 4, terminationTime = 100;
+
+//Variables for the shared memory key and shared memory segment ID
+int sharedMemoryKey = ftok("makefile", 'p'), sharedMemorySegmentID;
+
+//Variable to keep track of the current concurrent processes
+int concurrentProcesses = 0;
+
+//Do I need this? int status = 0;
+
+//Creating the shared memory as a struct
+struct mySharedMemory
 {
-        int count;
-        int turn;
-
-        int flags[20];
+        int turn, count, slaveGroup, flags[20];
         char data[20][256];
-
-        int slaveProcessGroup;
 };
 
-void trySpawnChild(int count);
-void spawn(int count);
-void sigHandler(int SIG_CODE);
-void timerSignalHandler(int);
-void releaseMemory();
+//The shared memory pointer
+struct mySharedMemory* sharedMemory;
 
-void parentInterrupt(int seconds);
+//All the function declarations
+
+//Function countdowns to 0 and resets. Also generates a signal.
 void timer(int seconds);
 
-const int MAX_NUM_OF_PROCESSES_IN_SYSTEM = 20;
-int currentConcurrentProcessesInSystem = 0;
+//This function sends a signal used in the timer function
+void interrupt(int seconds);
 
-int maxTotalProcessesInSystem = 4;
-int maxConcurrentProcessesInSystem = 2;
-int durationBeforeTermination = 100;
-int shmKey = ftok("makefile", 'p');
-int shmSegmentID;
-struct shared_memory* shm;
+//Function to spawn children
+void spawnChildren(int count);
 
-int status = 0;
+//Function to handle a Ctrl + C interrupt
+void signalHandler(int SIGNAL_CODE);
 
-int startTime;
+//Function to release all shared memory
+void release();
 
 int main(int argc, char** argv)
 {
-        signal(SIGINT, sigHandler);
+        signal(SIGINT, signalHandler);
 
-        if((shmSegmentID = shmget(shmKey, sizeof(struct shared_memory), IPC_CREAT | S_IRUSR | S_IWUSR)) < 0)
+        if((sharedMemorySegmentID = shmget(sharedMemoryKey, sizeof(struct mySharedMemory), IPC_CREAT | S_IRUSR | S_IWUSR)) < 0)
         {
                 perror("Failed to create");
                 exit(1);
@@ -59,7 +69,7 @@ int main(int argc, char** argv)
 
         else
         {
-                shm = (struct shared_memory*) shmat(shmSegmentID, NULL, 0);
+                sharedMemory = (struct mySharedMemory*) shmat(sharedMemorySegmentID, NULL, 0);
         }
 
         int c;
@@ -71,67 +81,64 @@ int main(int argc, char** argv)
                         case 'h':
 
                                 cout << "USAGE: " << endl;
-                                cout << "./master -h for help command" << endl;
-                                cout << "./master [-n x] [-s x] [-t time] infile" << endl;
-                                cout << "PARAMETERS: " endl;
-                                cout << "-h Describes how the project should be run and then terminate." << endl;
-                                cout << "-n x Indicate the maximum total of child processes master will ever create. (Default 4)" << endl;
-                                cout << "-s x Indicate the number of children allowed to exist in the system at the same time (Default 2)" << endl;
-                                cout << "-t time The time in seconds after which the processes will terminate, even if it has not finished (Default 100)" << endl;
-                                cout << "infile containing strings to be tested" << endl;
+                                cout << "Type in ./master -h for assistance" << endl;
+                                cout << "This is the format you should type in: ./master [-n x] [-s x] [-t time] yourFile.txt" << endl;
+                                cout << "Explanation of the parameters: " << endl;
+                                cout << "-h Tells you what the program does." << endl;
+                                cout << "-n x is the max total child processes the master will ever create." << endl;
+                                cout << "-s x is the number of children able to exist at the same time." << endl;
+                                cout << "-t time is the time (in seconds) after which the processes will terminate." << endl;
                                 exit(0);
                         break;
 
                         case 'n':
 
-                                maxTotalProcessesInSystem = atoi(optarg);
+                                maxTotalProcesses = atoi(optarg);
 
-                                if((maxTotalProcessesInSystem <= 0) || maxTotalProcessesInSystem > MAX_NUM_OF_PROCESSES_IN_SYSTEM)
+                                if((maxTotalProcesses <= 0) || maxTotalProcesses > MAX_PROCESSES)
                                 {
-                                        perror("Max Processes: Cannot be 0 or greater than 20");
+                                        perror("There can be no more than 20 processes and no less than 0 processes.");
                                         exit(1);
                                 }
                         break;
 
                         case 's':
 
-                                maxConcurrentProcessesInSystem = atoi(optarg);
+                                maxConcurrentProcesses = atoi(optarg);
 
-                                if(maxConcurrentProcessesInSystem <= 0)
+                                if(maxConcurrentProcesses <= 0)
                                 {
-                                        perror("The max concurrent processes CANNOT be less than or equal to 0.");
+                                        perror("There must be at least 1 or more max concurrent processes.");
                                         exit(1);
                                 }
                         break;
 
                         case 't':
 
-                                durationBeforeTermination = atoi(optarg);
+                                terminationTime = atoi(optarg);
 
-                                if(durationBeforeTermination <= 0)
+                                if(terminationTime <= 0)
                                 {
-                                        perror("Master cannot have a duration less than or equal to 0.");
+                                        perror("The master process cannot have a duration less than or equal to 0.");
                                         exit(1);
                                 }
                         break;
 
                         default:
-                                perror("THESE ARE NOT VALID PARAMETERS: Use -h for help");
-                                cout << "./master -h for help command" << endl;
-                                cout << "./master [-n x] [-s x] [-t time] infile" << endl;
+                                perror("YOU HAVE NOT TYPED IN VALID PARAMETERS: Please type in ./master -h for help.");
                                 exit(1);
                         break;
                 }
         }
 
-        parentInterrupt(durationBeforeTermination);
+        interrupt(terminationTime);
 
         int i = 0;
         FILE *fp = fopen(argv[optind], "r");
 
         if(fp == 0)
         {
-                perror("fopen: File not found");
+                perror("File not found!");
                 exit(1);
         }
 
@@ -140,136 +147,133 @@ int main(int argc, char** argv)
         while(fgets(line, sizeof(line), fp) != NULL)
         {
                 line[strlen(line) - 1] = '\0';
-                strcpy(shm->data[i], line);
+                strcpy(sharedMemory->data[i], line);
                 i++;
         }
 
         int count = 0;
 
-        if(i < maxTotalProcessesInSystem)
+        if(i < maxTotalProcesses)
         {
-                maxTotalProcessesInSystem = i;
+                maxTotalProcesses = i;
         }
 
-        if(maxTotalProcessesInSystem < maxConcurrentProcessesInSystem)
+        if(maxTotalProcesses < maxConcurrentProcesses)
         {
-                maxConcurrentProcessesInSystem = maxTotalProcessesInSystem;
+                maxConcurrentProcesses = maxTotalProcesses;
         }
 
-        shm->count = maxTotalProcessesInSystem;
+        sharedMemory->count = maxTotalProcesses;
 
-        while(count < maxConcurrentProcessesInSystem)
+        while(count < maxConcurrentProcesses)
         {
-                trySpawnChild(count++);
+                spawnChildren(count++);
         }
 
-        while(currentConcurrentProcessesInSystem > 0)
+        while(concurrentProcesses > 0)
         {
                 wait(NULL);
-                --currentConcurrentProcessesInSystem;
-                trySpawnChild(count++);
+                --concurrentProcesses;
+                spawnChildren(count++);
         }
 
-        releaseMemory();
+        release();
 
         return 0;
 }
 
-void trySpawnChild(int count)
+//Function to time
+void timer(int seconds)
 {
-        if((currentConcurrentProcessesInSystem < maxConcurrentProcessesInSystem) && (count < maxTotalProcessesInSystem))
+        //Struct to access seconds variables
+        struct itimerval myTimer;
+
+        myTimer.it_value.tv_sec = seconds;
+        myTimer.it_value.tv_usec = 0;
+        myTimer.it_interval.tv_sec = 0;
+        myTimer.it_interval.tv_usec = 0;
+
+        if(setitimer(ITIMER_REAL, &myTimer, NULL) == -1)
         {
-                spawn(count);
+                perror("There has been an error");
         }
 }
 
-void spawn(int count)
+//Function that counts down to 0 and then sends a signal
+void interrupt(int seconds)
 {
-        ++currentConcurrentProcessesInSystem;
-        if(fork() == 0)
+        timer(seconds);
+
+        //Struct to use for signals
+        struct sigaction signalStuff;
+
+        sigemptyset(&signalStuff.sa_mask);
+        signalStuff.sa_handler = &signalHandler;
+        signalStuff.sa_flags = SA_RESTART;
+
+        if(sigaction(SIGALRM, &signalStuff, NULL) == -1)
         {
-                if(count == 1)
+                perror("There has been an error");
+        }
+}
+
+//Function that spawns children, gives out an ID, and then put the children into palin
+void spawnChildren(int count)
+{
+        if((concurrentProcesses < maxConcurrentProcesses) && (count < maxTotalProcesses))
+        {
+                ++concurrentProcesses;
+
+                if(fork() == 0)
                 {
-                        shm->slaveProcessGroup = getpid();
+                        if(count == 1)
+                        {
+                                sharedMemory->slaveGroup = getpid();
+                        }
+
+                        setpgid(0, sharedMemory->slaveGroup);
+
+                        char buffer[256];
+
+                        sprintf(buffer, "%d", count + 1);
+
+                        execl("./palin", "palin", buffer, (char*) NULL);
+
+                        exit(0);
+
                 }
-
-                setpgid(0, shm->slaveProcessGroup);
-
-                char buf[256];
-
-                sprintf(buf, "%d", count + 1);
-
-                execl("./palin", "palin", buf, (char*) NULL);
-
-                exit(0);
         }
 }
 
-void sigHandler(int signal)
+//Function to handle a Ctrl + C interrupt
+void signalHandler(int signal)
 {
-        killpg(shm->slaveProcessGroup, SIGTERM);
+        killpg(sharedMemory->slaveGroup, SIGTERM);
         int status;
 
         while(wait(&status) > 0)
         {
                 if(WIFEXITED(status))
                 {
-                        printf("Ok: Child exited with exit status: %d\n", WEXITSTATUS(status));
+                        printf("The child process exited with this exit status: %d", WEXITSTATUS(status));
                 }
 
                 else
                 {
-                        printf("ERROR: Child has not terminated correctly\n");
+                        printf("Child has NOT terminated");
                 }
         }
 
-        releaseMemory();
+        release();
 
-        cout << "Exiting master process" << endl;
+        cout << "Now exiting master process" << endl;
 
         exit(0);
 }
 
-void releaseMemory()
+//Function to release the shared memory
+void release()
 {
-        shmdt(shm);
-        shmctl(shmSegmentID, IPC_RMID, NULL);
-}
-
-void parentInterrupt(int seconds)
-{
-        timer(seconds);
-
-        struct sigaction sa;
-
-        sigemptyset(&sa.sa_mask);
-
-        sa.sa_handler = &sigHandler;
-
-        sa.sa_flags = SA_RESTART;
-
-        if(sigaction(SIGALRM, &sa, NULL) == -1)
-        {
-                perror("ERROR");
-        }
-}
-
-void timer(int seconds)
-{
-        struct itimerval value;
-
-        value.it_value.tv_sec = seconds;
-
-        value.it_value.tv_usec = 0;
-
-        value.it_value.tv_usec = 0;
-
-        value.it_interval.tv_sec = 0;
-
-        value.it_interval.tv_usec = 0;
-
-        if(setitimer(ITIMER_REAL, &value, NULL) == -1)
-        {
-                perror("ERROR");
-        }
+        shmdt(sharedMemory);
+        shmctl(sharedMemorySegmentID, IPC_RMID, NULL);
 }
